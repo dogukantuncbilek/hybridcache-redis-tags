@@ -57,18 +57,24 @@ What they prove:
 - moving a product between categories invalidates both lists;
 - `POST /cache/invalidate/products` drops every entry;
 - 25 concurrent misses for the same key call the repository once;
-- with Redis: instance B is served from L2 after instance A populated it, and sees A's invalidation on its next read.
+- with Redis: instance B is served from L2 after instance A populated it, and sees A's invalidation within milliseconds through the pub/sub bridge.
 
 ## The parts worth copying
 
 - `ProductCatalogCache.cs`: the whole caching surface in one class. State is passed into `GetOrCreateAsync` through a tuple and a `static` lambda, so the factory does not capture anything per call.
 - `CacheTags.cs` / `CacheKeys.cs`: keys and tags built in one place, lower-cased, so an invalidation never misses because of a typo.
-- `Program.cs`: Redis is optional; the `IConnectionMultiplexer` is registered once and handed to `RedisCacheOptions.ConnectionMultiplexerFactory` so the health check and the cache share a connection.
+- `Program.cs`: Redis is optional; the `IConnectionMultiplexer` is registered once and handed to `RedisCacheOptions.ConnectionMultiplexerFactory`, so the cache, the health check and the pub/sub bridge share a connection.
+- `TagInvalidation.cs`: `ITagInvalidator` with a local implementation and the Redis pub/sub implementation that makes tag invalidation reach every instance immediately.
 - `RedisHealthCheck.cs`: PING with a latency threshold, tagged `ready`, so `/health/ready` fails before traffic hits a dead Redis.
+
+## Why the pub/sub bridge exists
+
+`RemoveByTagAsync` is timestamp-based: it records "everything carrying this tag and written before now is stale", locally and in L2, and entries are checked lazily on read, so invalidating a tag is O(1) no matter how many keys carry it. What it does **not** do is reach into the L1 of other instances: a node that already holds a value keeps serving it until its `LocalCacheExpiration` runs out (the first version of the two-instance test in this repo failed exactly that way).
+
+`RedisTagInvalidator` closes the gap: every invalidation is applied locally and published on a Redis channel; every instance subscribes and applies invalidations from other origins to its own cache. Without Redis the app uses `LocalTagInvalidator`, which is just `RemoveByTagAsync`. The interface `ITagInvalidator` is the only thing the catalogue code sees.
 
 ## Notes
 
-- Tag invalidation in `HybridCache` is timestamp-based: `RemoveByTagAsync` records "everything with this tag written before now is stale" in L1 and L2; entries are checked lazily on read, so the cost is O(1) regardless of how many keys carry the tag.
 - `MaximumPayloadBytes` is set to 1 MB; larger values are not cached, which is the behaviour you want for accidental giant responses.
 - `LocalCacheExpiration` shorter than `Expiration` bounds how long an instance can serve a value that another instance has already replaced without tags, for example when a write path forgets to invalidate.
 

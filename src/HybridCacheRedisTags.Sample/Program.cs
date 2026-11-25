@@ -13,9 +13,13 @@ var healthChecks = builder.Services.AddHealthChecks();
 if (string.IsNullOrWhiteSpace(redisConnectionString))
 {
     builder.Services.AddDistributedMemoryCache();
+    builder.Services.AddSingleton<ITagInvalidator, LocalTagInvalidator>();
 }
 else
 {
+    builder.Services.AddSingleton<RedisTagInvalidator>();
+    builder.Services.AddSingleton<ITagInvalidator>(sp => sp.GetRequiredService<RedisTagInvalidator>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<RedisTagInvalidator>());
     builder.Services.AddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(redisConnectionString));
     builder.Services.AddStackExchangeRedisCache(options =>
     {

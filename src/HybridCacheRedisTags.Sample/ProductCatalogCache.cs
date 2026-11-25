@@ -2,7 +2,7 @@ using Microsoft.Extensions.Caching.Hybrid;
 
 namespace HybridCacheRedisTags.Sample;
 
-public sealed class ProductCatalogCache(HybridCache cache, ProductRepository repository)
+public sealed class ProductCatalogCache(HybridCache cache, ITagInvalidator invalidator, ProductRepository repository)
 {
     private static readonly HybridCacheEntryOptions ProductOptions = new()
     {
@@ -46,7 +46,7 @@ public sealed class ProductCatalogCache(HybridCache cache, ProductRepository rep
         await InvalidateProductAsync(before, ct);
         if (after is not null && !string.Equals(after.Category, before.Category, StringComparison.OrdinalIgnoreCase))
         {
-            await cache.RemoveByTagAsync(CacheTags.Category(after.Category), ct);
+            await invalidator.InvalidateAsync(CacheTags.Category(after.Category), ct);
         }
 
         return after;
@@ -64,11 +64,11 @@ public sealed class ProductCatalogCache(HybridCache cache, ProductRepository rep
         return true;
     }
 
-    public ValueTask InvalidateTagAsync(string tag, CancellationToken ct = default) => cache.RemoveByTagAsync(tag, ct);
+    public ValueTask InvalidateTagAsync(string tag, CancellationToken ct = default) => invalidator.InvalidateAsync(tag, ct);
 
     private async Task InvalidateProductAsync(Product product, CancellationToken ct)
     {
-        await cache.RemoveByTagAsync(CacheTags.Product(product.Id), ct);
-        await cache.RemoveByTagAsync(CacheTags.Category(product.Category), ct);
+        await invalidator.InvalidateAsync(CacheTags.Product(product.Id), ct);
+        await invalidator.InvalidateAsync(CacheTags.Category(product.Category), ct);
     }
 }

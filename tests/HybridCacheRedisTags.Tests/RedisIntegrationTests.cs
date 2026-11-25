@@ -9,7 +9,7 @@ public sealed class RedisIntegrationTests
     private static string? Redis => SampleAppFactory.RedisFromEnvironment;
 
     [Fact]
-    public async Task Second_instance_reads_from_redis_and_sees_tag_invalidation_from_the_first()
+    public async Task Second_instance_is_served_from_redis_after_the_first_populated_it()
     {
         if (Redis is null)
         {
@@ -25,15 +25,40 @@ public sealed class RedisIntegrationTests
 
         var fromA = await clientA.GetFromJsonAsync<Product>("/products/1");
         var fromB = await clientB.GetFromJsonAsync<Product>("/products/1");
-        var readsAfterBothRead = database.Reads;
 
-        await clientA.PutAsJsonAsync("/products/1", new ProductUpdate("Brake pads v2", null, null));
-        var fromBAfter = await clientB.GetFromJsonAsync<Product>("/products/1");
+        Assert.Equal(fromA!.Version, fromB!.Version);
+        Assert.Equal(1, database.Reads);
+    }
 
-        Assert.Equal(1, fromA!.Version);
-        Assert.Equal(1, fromB!.Version);
-        Assert.Equal(1, readsAfterBothRead);
-        Assert.Equal(2, fromBAfter!.Version);
+    [Fact]
+    public async Task Tag_invalidation_on_one_instance_reaches_the_other_through_pub_sub()
+    {
+        if (Redis is null)
+        {
+            return;
+        }
+
+        var database = new ProductRepository(TimeSpan.Zero);
+        var instance = $"shared-{Guid.NewGuid():N}:";
+        using var first = new SampleAppFactory(Redis, database, instance);
+        using var second = new SampleAppFactory(Redis, database, instance);
+        using var clientA = first.CreateClient();
+        using var clientB = second.CreateClient();
+
+        await clientA.GetFromJsonAsync<Product>("/products/2");
+        var beforeOnB = await clientB.GetFromJsonAsync<Product>("/products/2");
+        await clientA.PutAsJsonAsync("/products/2", new ProductUpdate("Brake disc v2", null, null));
+
+        Product? afterOnB = null;
+        for (var attempt = 0; attempt < 40 && afterOnB?.Version != 2; attempt++)
+        {
+            await Task.Delay(50);
+            afterOnB = await clientB.GetFromJsonAsync<Product>("/products/2");
+        }
+
+        Assert.Equal(1, beforeOnB!.Version);
+        Assert.Equal(2, afterOnB!.Version);
+        Assert.Equal("Brake disc v2", afterOnB.Name);
     }
 
     [Fact]
